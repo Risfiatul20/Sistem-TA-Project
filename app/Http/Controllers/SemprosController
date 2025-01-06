@@ -1,0 +1,182 @@
+
+    <?php
+namespace App\Http\Controllers;
+
+use App\Models\Sempro;
+use App\Models\Proposal;
+use App\Services\SemprosService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class SemprosController extends Controller
+{
+    protected $semprosService;
+
+    public function __construct(SemprosService $semprosService)
+    {
+        $this->semprosService = $semprosService;
+    }
+
+    public function index()
+    {
+        $user = Auth::user();
+        $sempros = $this->semprosService->getSemprosByUser($user);
+
+        return view('sempros.index', compact('sempros'));
+    }
+
+    public function create()
+    {
+        // Ambil proposal yang sudah disetujui untuk dipilih
+        $proposals = Proposal::where('status', 'disetujui')
+            ->where('user_id', Auth::id())
+            ->get();
+
+        // Ambil dosen untuk pilihan pembimbing/penguji
+        $dosens = User::where('role', 'dosen')->get();
+
+        return view('sempros.create', compact('proposals', 'dosens'));
+    }
+
+    public function store(Request $request)
+    {
+        $validatedData = $request->validate([
+            'proposal_id' => 'required|exists:proposals,id',
+            'dosen_pembimbing_id' => 'required|exists:users,id',
+            'dosen_penguji_id' => 'required|exists:users,id|different:dosen_pembimbing_id',
+            'tanggal' => 'required|date|after:today',
+            'jam' => 'required|date_format:H:i',
+            'ruang' => 'required|string|max:100',
+        ]);
+
+        try {
+            $sempro = $this->semprosService->createSempro($validatedData);
+
+            return redirect()->route('sempros.index')
+                ->with('success', 'Sempro berhasil dijadwalkan');
+        } catch (\Exception $e) {
+            return back()
+                ->withErrors(['error' => $e->getMessage()])
+                ->withInput();
+        }
+    }
+
+    public function show(Sempro $sempro)
+    {
+        // Otorisasi view sempro
+        $this->authorize('view', $sempro);
+
+        return view('sempros.show', compact('sempro'));
+    }
+
+    public function edit(Sempro $sempro)
+    {
+        // Otorisasi edit sempro
+        $this->authorize('update', $sempro);
+
+        // Ambil proposal yang sudah disetujui
+        $proposals = Proposal::where('status', 'disetujui')->get();
+
+        // Ambil dosen untuk pilihan pembimbing/penguji
+        $dosens = User::where('role', 'dosen')->get();
+
+        return view('sempros.edit', compact('sempro', 'proposals', 'dosens'));
+    }
+
+    public function update(Request $request, Sempro $sempro)
+    {
+        // Otorisasi update sempro
+        $this->authorize('update', $sempro);
+
+        $validatedData = $request->validate([
+            'proposal_id' => 'required|exists:proposals,id',
+            'dosen_pembimbing_id' => 'required|exists:users,id',
+            'dosen_penguji_id' => 'required|exists:users,id|different:dosen_pembimbing_id',
+            'tanggal' => 'required|date|after:today',
+            'jam' => 'required|date_format:H:i',
+            'ruang' => 'required|string|max:100',
+            'status' => 'sometimes|in:dijadwalkan,berlangsung,selesai,ditunda'
+        ]);
+
+        try {
+            $updatedSempro = $this->semprosService->updateSempro($sempro, $validatedData);
+
+            return redirect()->route('sempros.index')
+                ->with('success', 'Sempro berhasil diupdate');
+        } catch (\Exception $e) {
+            return back()
+                ->withErrors(['error' => $e->getMessage()])
+                ->withInput();
+        }
+    }
+
+    public function destroy(Sempro $sempro)
+    {
+        // Otorisasi hapus sempro
+        $this->authorize('delete', $sempro);
+
+        $sempro->delete();
+
+        return redirect()->route('sempros.index')
+            ->with('success', 'Jadwal Sempro berhasil dihapus');
+    }
+
+    public function changeStatus(Sempro $sempro, $status)
+    {
+        // Otorisasi ubah status
+        $this->authorize('changeStatus', $sempro);
+
+        $allowedStatuses = [
+            'dijadwalkan', 
+            'berlangsung', 
+            'selesai', 
+            'ditunda'
+        ];
+
+        if (!in_array($status, $allowedStatuses)) {
+            return back()->withErrors(['error' => 'Status tidak valid']);
+        }
+
+        try {
+            $this->semprosService->changeSemprosStatus($sempro, $status);
+
+            return back()->with('success', 'Status Sempro berhasil diubah');
+        } catch (\Exception $e) {
+            return back()->withErrors(['error' => $e->getMessage()]);
+        }
+    }
+
+    // Metode khusus untuk generate laporan
+    public function generateReport(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Filter berdasarkan parameter
+        $query = Sempro::query();
+
+        if ($request->has('status')) {
+            $query->where('status', $request->input('status'));
+        }
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $query->whereBetween('tanggal', [
+                $request->input('start_date'), 
+                $request->input('end_date')
+            ]);
+        }
+
+        // Filter berdasarkan role
+        $sempros = $query->filterByUserRole($user)->get();
+
+        // Generate PDF atau Excel
+        return $this->exportReport($sempros);
+    }
+
+    protected function exportReport($sempros)
+    {
+        // Implementasi export PDF/Excel
+        // Contoh menggunakan PDF
+        $pdf = PDF::loadView('reports.sempros', compact('sempros'));
+        return $pdf->download('laporan-sempros.pdf');
+    }
+}
